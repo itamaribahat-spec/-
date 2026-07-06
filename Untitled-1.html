@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <title>Flight Ops Tracker | Pro FIR Parser</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; background: #0b0b0e; color: #e1e1e6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        #map { height: 50vh; width: 100%; background: #111214; }
+        
+        /* Dashboard Overlay Panels */
+        #telemetry-hud {
+            position: absolute; top: 20px; left: 20px; z-index: 1000;
+            background: rgba(18, 18, 22, 0.95); padding: 15px 20px; border-radius: 8px;
+            box-shadow: 0 4px 25px rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.08);
+            min-width: 260px; direction: ltr; backdrop-filter: blur(6px);
+        }
+        .hud-title { font-weight: 800; color: #ff5e00; font-size: 15px; letter-spacing: 1px; margin-bottom: 10px; text-align: center; }
+        .hud-row { display: flex; justify-content: space-between; margin: 5px 0; font-family: monospace; font-size: 13px; }
+        .hud-label { color: #8a8a93; }
+        .hud-value { color: #ffffff; font-weight: bold; }
+        .live-val { color: #00ff66; font-size: 15px; }
+
+        /* Control Panel Bottom Drawer */
+        #control-drawer {
+            height: 50vh; background: #121216; border-top: 2px solid #222329;
+            display: grid; grid-template-columns: 1fr 1.3fr 1.4fr; gap: 15px; padding: 15px; box-sizing: border-box;
+        }
+        .panel { display: flex; flex-direction: column; background: #18181c; border: 1px solid #2d2d35; border-radius: 6px; padding: 12px; box-sizing: border-box; height: 100%; }
+        .panel-title { font-size: 13px; font-weight: 700; color: #00ff66; margin-bottom: 8px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.5px; }
+        
+        .fmc-input { width: 100%; padding: 10px; background: #09090b; border: 1px solid #3c3c45; color: #00ff66; font-family: monospace; font-size: 14px; border-radius: 4px; box-sizing: border-box; text-transform: uppercase; }
+        .fmc-input:focus { border-color: #ff5e00; outline: none; }
+        .fmc-btn { background: #ff5e00; border: none; padding: 10px; color: white; font-weight: bold; font-size: 13px; border-radius: 4px; cursor: pointer; margin-top: 8px; text-transform: uppercase; transition: background 0.15s; }
+        .fmc-btn:hover { background: #e05200; }
+        
+        #route-status { font-size: 12px; margin-top: 6px; color: #8a8a93; font-family: monospace; overflow-y: auto; flex-grow: 1; direction: ltr; }
+        
+        /* Logbook List & Advanced Controls */
+        .log-list { overflow-y: auto; flex-grow: 1; direction: ltr; font-family: monospace; font-size: 12px; }
+        .log-item { padding: 8px 0; border-bottom: 1px solid #222329; color: #aaa; display: flex; justify-content: space-between; align-items: center; }
+        .log-content { display: flex; flex-direction: column; flex-grow: 1; margin-right: 10px; }
+        .log-route { color: #00ff66; font-weight: bold; word-break: break-all; }
+        .log-time { color: #666; font-size: 11px; }
+        .log-actions { display: flex; gap: 5px; }
+        .action-btn { background: none; border: none; cursor: pointer; font-size: 14px; padding: 3px 6px; border-radius: 3px; transition: background 0.2s; }
+        .action-btn:hover { background: rgba(255,255,255,0.1); }
+
+        .chart-container { position: relative; flex-grow: 1; width: 100%; height: 85%; }
+        .plane-icon-css { transition: transform 0.05s linear; }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <div id="telemetry-hud">
+        <div class="hud-title">FLIGHT OPERATIONAL DATA</div>
+        <div class="hud-row"><span class="hud-label">STATUS</span><span class="hud-value" id="status" style="color: #ff3333;">NO DATA LINK</span></div>
+        <div class="hud-row"><span class="hud-label">ALTITUDE</span><span class="hud-value live-val" id="alt">0 FT</span></div>
+        <div class="hud-row"><span class="hud-label">AIRSPEED</span><span class="hud-value live-val" id="speed">0 KT</span></div>
+        <div class="hud-row"><span class="hud-label">HEADING</span><span class="hud-value" id="hdg">000°</span></div>
+        <div class="hud-row"><span class="hud-label">POSITION</span><span class="hud-value" id="pos" style="font-size:11px;">0.0000, 0.0000</span></div>
+    </div>
+
+    <div id="control-drawer">
+        <div class="panel">
+            <div class="panel-title">FMC Flight Plan / Route Matrix</div>
+            <input type="text" id="route-input" class="fmc-input" placeholder="E.g., ABASS ABBEY ABLOK ACKERR">
+            <button class="fmc-btn" onclick="executeFlightPlan()">Execute & Log Flight</button>
+            <div id="route-status" style="margin-bottom: 5px;">STBY - READY TO INSERT ROUTE DATA</div>
+            <div id="db-status" style="color: #ca32ff; font-size: 11px; font-weight: bold; border-top: 1px solid #333; padding-top: 5px;">LOADING DB...</div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">Personal Logbook Management</div>
+            <div id="log-list" class="log-list"></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">Vertical Profile (Live Altitude Chart)</div>
+            <div class="chart-container">
+                <canvas id="altitudeChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet-rotatedmarker@0.2.0/leaflet.rotatedMarker.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <script>
+        // המאגר הגולמי מתוך ה-PDF שלך (מוכן לפענוח אוטומטי)
+        // תוכל להדביק לכאן בהמשך עוד עמודים בדיוק באותו פורמט!
+        const rawPDFData = `
+            "ABARB","325106S","1545605E"
+            "ABASS","343500S","1505636E"
+            "ABBEY","342411S","1510541E"
+            "ABLOK","124304S","1432624E"
+            "ABTOD","325942S","1350800E"
+            "ABTOX","184713S","1471015E"
+            "ABVAS","225618S","1500156E"
+            "ABVOG","374021S","1443916E"
+            "ABVOM","292038S","1681033E"
+            "ABVUV","123100S","1292600E"
+            "ACKER","120116S","1321218E"
+            "ACOOL","300000S","1100000E"
+            "ACTIN","333013S","1380133E"
+            "ADBER","122111S","1305741E"
+            "ADBOK","341645S","1541523E"
+            "ADGAD","250000S","1525500E"
+            "ADGET","273025S","1531943E"
+            "ADKEX","294843S","1520658E"
+            "ADKIV","140155S","1322940E"
+            "ADKOP","234828S","1334839E"
+            "ADKUK","373306S","1451412E"
+            "ADKUL","092437S","1295620E"
+            "ADLAG","183840S","1463816E"
+            "ADLEK","355958S","1464859E"
+            "ADLIV","331913S","1534312E"
+            "ADLOB","204810S","1165255E"
+            "ADLOS","232910S","1501942E"
+            "ADLOT","141000S","1231900E"
+            "ADMAK","282038S","1535210E"
+            "ADMAR","301922S","1515443E"
+            "ADNOD","190103S","1464748E"
+            "ADNUK","264005S","1534826E"
+            "AGAGO","281313S","1364539E"
+            "AGELU","314954S","1154324E"
+            "AGETA","300143S","1480742E"
+            "AGETI","262011S","1524340E"
+            "AGIGA","122404S","1313241E"
+            "AGIVA","272713S","1515600E"
+            "AGONI","274332S","1523434E"
+            "AGPOK","192300S","1464900E"
+            "AGPUD","263010S","1310748E"
+            "AGRAX","224017S","1415030E"
+            "AGREK","270120S","1211922E"
+            "AGROS","342500S","1375336E"
+            "AGSAL","263430S","1531347E"
+            "AGSAX","345558S","1381841E"
+            "AGSEL","195528S","1094101E"
+            "AGSIR","191209S","1464715E"
+            "AGSUL","345255S","1504948E"
+            "AGTOD","325511S","1194522E"
+            "AGTOR","304714S","1490741E"
+            "AGUST","133743S","1311215E"
+            "AGVAL","122700S","1340600E"
+            "AGVIT","191109S","1464922E"
+            "AHOSK","404158S","1461237E"
+            "AIDEN","235558S","1335120E"
+            "AKALU","342230S","1550950E"
+            "AKBUG","185708S","1462625E"
+            "AKDAV","330147S","1361213E"
+            "AKDEL","375004S","1445208E"
+            "AKEMU","335645S","1504616E"
+            "AKERO","264227S","1532138E"
+            "AKEVU","243836S","1472724E"
+            "AKINU","204152S","1430636E"
+            "AKISO","271415S","1401107E"
+            "AKLAB","400000S","1453046E"
+            "AKLIM","351058S","1494740E"
+            "AKLOL","325338S","1520731E"
+            "AKMER","312531S","1155905E"
+            "AKMIR","341043S","1500624E"
+            "AKNEV","331409S","1491406E"
+            "AKNOK","341136S","1415249E"
+            "AKNON","273827S","1524243E"
+            "AKNUD","122425S","1312026E"
+            "AKNUM","353355S","1424717E"
+            "AKOBA","264215S","1530344E"
+            "AKOGI","205849S","1152359E"
+            "AKOGU","163634S","1453322E"
+            "AKPAL","322224S","1491047E"
+            "AKROM","182114S","1464801E"
+            "AKRUM","171401S","1192100E"
+            "AKRUN","334236S","1250000E"
+            "AKRUS","324805S","1515951E"
+            "AKSID","374553S","1450541E"
+            "AKSIK","273431S","1524106E"
+            "AKSOS","330506S","1164658E"
+            "AKTAM","394215S","1461429E"
+            "AKTEG","330211S","1510029E"
+            "AKTOB","273402S","1530005E"
+            "AKUKO","090030S","1022106E"
+            "AKUMI","251414S","1471922E"
+            "AKUVO","204316S","1152404E"
+            "AKVEM","273233S","1512812E"
+            "AKVIN","375546S","1470053E"
+            "AKVOG","281256S","1533218E"
+            "ALAKU","210016S","1201614E"
+            "ALALI","324750S","1514959E"
+            "ALASU","330000S","1440000E"
+            "ALAXO","375024S","1435842E"
+            "ALAXU","251308S","1493049E"
+            "ALBEE","192242S","1460822E"
+            "ALBIX","333254S","1280000E"
+            "ALBUB","272456S","1525400E"
+            "ALDAR","293548S","1521041E"
+            "ALDAT","345632S","1381332E"
+            "ALDEL","252843S","1180932E"
+            "ALDIM","234442S","1334720E"
+            "ALDOP","350345S","1492257E"
+            "APIMA","203655S","1160439E"
+            "JAFFA","312230S","1514136E"
+            "JACKA","384612S","1451548E"
+            "JADEL","373348S","1445706E"
+            "ROYAL","352747S","1490947E"
+            "WEIRD","381131S","1471958E"
+            "WOKKI","121949S","1305334E"
+            "WHALE","335906S","1513441E"
+            "YARRA","375030S","1445212E"
+            "ZONKA","335729S","1510645E"
+        `;
+
+        const waypointDatabase = {};
+
+        // Parser Core: מנוע הפענוח האוטומטי שלנו
+        function convertToDecimal(coordStr) {
+            const direction = coordStr.slice(-1); // S, N, E, W
+            const numbers = coordStr.slice(0, -1);
+            
+            let deg, min, sec;
+            if (direction === 'E' || direction === 'W') {
+                // Longitude (קו אורך) מתחיל תמיד ב-3 ספרות מעלות
+                deg = parseInt(numbers.slice(0, 3), 10);
+                min = parseInt(numbers.slice(3, 5), 10);
+                sec = parseInt(numbers.slice(5, 7), 10);
+            } else {
+                // Latitude (קו רוחב) מתחיל ב-2 ספרות מעלות
+                deg = parseInt(numbers.slice(0, 2), 10);
+                min = parseInt(numbers.slice(2, 4), 10);
+                sec = parseInt(numbers.slice(4, 6), 10);
+            }
+            
+            let decimal = deg + (min / 60) + (sec / 3600);
+            if (direction === 'S' || direction === 'W') {
+                decimal = -decimal;
+            }
+            return decimal;
+        }
+
+        // חילוץ ובניית ה-DB ברגע שהדף עולה
+        const regex = /"([A-Z0-9]+)","(\d+[NS])","(\d+[EW])"/g;
+        let match;
+        let count = 0;
+        while ((match = regex.exec(rawPDFData)) !== null) {
+            const name = match[1];
+            const lat = convertToDecimal(match[2]);
+            const lng = convertToDecimal(match[3]);
+            waypointDatabase[name] = [lat, lng];
+            count++;
+        }
+        document.getElementById('db-status').innerText = `DB LOADED: ${count} WAYPOINTS ACTIVE`;
+
+        // המפה מתמרכזת אוטומטית ליבשת הרלוונטית
+        const map = L.map('map', { zoomControl: false }).setView([-25.2744, 133.7751], 4);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        const planeSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="38" height="38" fill="#ff5e00"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`;
+        const planeIcon = L.divIcon({ html: planeSVG, iconSize: [38, 38], iconAnchor: [19, 19], className: 'plane-icon-css' });
+        const planeMarker = L.marker([-25.2744, 133.7751], { icon: planeIcon, rotationAngle: 0, rotationOrigin: 'center center' }).addTo(map);
+
+        let actualPathCoords = [];
+        const actualPathPolyline = L.polyline([], { color: '#ff2222', weight: 4, opacity: 0.95 }).addTo(map);
+        const plannedPathPolyline = L.polyline([], { color: '#ca32ff', weight: 3, opacity: 0.85, dashArray: '8, 8' }).addTo(map);
+        
+        let currentRouteMarkers = [];
+        let flightLogbook = JSON.parse(localStorage.getItem('itamar_flight_logs') || '[]');
+        renderLogbook();
+
+        const ctx = document.getElementById('altitudeChart').getContext('2d');
+        const altitudeChart = new Chart(ctx, {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'Altitude (FT)', data: [], borderColor: '#00ff66', borderWidth: 2, backgroundColor: 'rgba(0, 255, 102, 0.08)', fill: true, tension: 0.3, pointRadius: 0 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { color: '#8a8a93', font: { size: 10 } } }, y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8a8a93', font: { size: 10 } } } } }
+        });
+
+        const cachedRoute = localStorage.getItem('itamar_active_route');
+        if (cachedRoute) {
+            document.getElementById('route-status').innerText = "RESTORED FMC: " + cachedRoute;
+            setTimeout(() => drawRouteOnMap(cachedRoute), 500); 
+        }
+
+        function executeFlightPlan() {
+            const inputText = document.getElementById('route-input').value.trim().toUpperCase();
+            if (!inputText) return;
+            const timeStr = new Date().toLocaleString('he-IL', { hour12: false });
+            
+            flightLogbook.unshift({ id: Date.now(), time: timeStr, route: inputText });
+            saveAndRefreshLogbook();
+            
+            localStorage.setItem('itamar_active_route', inputText);
+            document.getElementById('route-status').innerText = "FMC ACT: " + inputText;
+            drawRouteOnMap(inputText);
+            document.getElementById('route-input').value = "";
+        }
+
+        function editLog(id) {
+            const log = flightLogbook.find(item => item.id === id);
+            if (!log) return;
+            const newRoute = prompt("ערוך את נתיב הטיסה (שמות הנקודות באנגלית):", log.route);
+            if (newRoute !== null) {
+                log.route = newRoute.trim().toUpperCase();
+                saveAndRefreshLogbook();
+                if (localStorage.getItem('itamar_active_route') === log.route || flightLogbook[0].id === id) {
+                    localStorage.setItem('itamar_active_route', log.route);
+                    drawRouteOnMap(log.route);
+                }
+            }
+        }
+
+        function deleteLog(id) {
+            if (confirm("האם למחוק את הטיסה מה-Logbook?")) {
+                flightLogbook = flightLogbook.filter(item => item.id !== id);
+                saveAndRefreshLogbook();
+                if (flightLogbook.length === 0) {
+                    localStorage.removeItem('itamar_active_route');
+                    plannedPathPolyline.setLatLngs([]);
+                    currentRouteMarkers.forEach(m => map.removeLayer(m));
+                    document.getElementById('route-status').innerText = "STBY - LOG EMPTY";
+                }
+            }
+        }
+
+        function saveAndRefreshLogbook() {
+            localStorage.setItem('itamar_flight_logs', JSON.stringify(flightLogbook));
+            renderLogbook();
+        }
+
+        function drawRouteOnMap(routeText) {
+            currentRouteMarkers.forEach(m => map.removeLayer(m));
+            currentRouteMarkers = [];
+            const tokens = routeText.split(/[\s,->]+/);
+            const coordsArray = [];
+            
+            let missing = [];
+            tokens.forEach(wp => {
+                const upperWp = wp.toUpperCase().trim();
+                const dbKey = Object.keys(waypointDatabase).find(k => k.toUpperCase() === upperWp);
+                if (dbKey) {
+                    const coords = waypointDatabase[dbKey];
+                    coordsArray.push(coords);
+                    const dot = L.divIcon({ html: `<div style="background: #ca32ff; width: 10px; height: 10px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 8px #ca32ff;"></div>`, iconSize: [14, 14] });
+                    currentRouteMarkers.push(L.marker(coords, { icon: dot }).addTo(map).bindPopup(`<b>${dbKey}</b>`));
+                } else if(upperWp.length > 0) {
+                    missing.push(upperWp);
+                }
+            });
+
+            if (missing.length > 0) {
+                document.getElementById('route-status').innerHTML += `<br><span style="color:#ff3333;">Missing: ${missing.join(', ')}</span>`;
+            }
+
+            if (coordsArray.length > 0) {
+                plannedPathPolyline.setLatLngs(coordsArray);
+                map.fitBounds(plannedPathPolyline.getBounds(), { padding: [60, 60], maxZoom: 12 });
+            }
+        }
+
+        function renderLogbook() {
+            const box = document.getElementById('log-list');
+            if (flightLogbook.length === 0) {
+                box.innerHTML = "<div style='color:#555; padding:10px;'>No flight logs preserved.</div>";
+                return;
+            }
+            box.innerHTML = flightLogbook.map(log => `
+                <div class="log-item">
+                    <div class="log-content">
+                        <span class="log-route" style="cursor:pointer;" onclick="drawRouteOnMap('${log.route}'); document.getElementById('route-status').innerText = 'FMC VIEW: ' + '${log.route}';">${log.route}</span>
+                        <span class="log-time">${log.time}</span>
+                    </div>
+                    <div class="log-actions">
+                        <button class="action-btn" onclick="drawRouteOnMap('${log.route}'); document.getElementById('route-status').innerText = 'FMC VIEW: ' + '${log.route}';" title="הצג">👁️</button>
+                        <button class="action-btn" onclick="editLog(${log.id})" title="ערוך">✏️</button>
+                        <button class="action-btn" onclick="deleteLog(${log.id})" title="מחק">❌</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function updateMapPosition() {
+            try {
+                const response = await fetch('http://localhost:3000/data');
+                const telemetry = await response.json();
+
+                if (telemetry.lat && telemetry.lon) {
+                    const newPos = [telemetry.lat, telemetry.lon];
+                    planeMarker.setLatLng(newPos);
+                    if (telemetry.hdg !== undefined) planeMarker.setRotationAngle(telemetry.hdg);
+                    
+                    if (currentRouteMarkers.length === 0) map.panTo(newPos);
+
+                    actualPathCoords.push(newPos);
+                    actualPathPolyline.setLatLngs(actualPathCoords);
+
+                    document.getElementById('status').innerText = "DATA LINK OK";
+                    document.getElementById('status').style.color = "#00ff66";
+                    document.getElementById('alt').innerText = `${Math.round(telemetry.alt).toLocaleString()} FT`;
+                    document.getElementById('speed').innerText = `${Math.round(telemetry.speed)} KT`;
+                    document.getElementById('hdg').innerText = `${Math.round(telemetry.hdg).toString().padStart(3, '0')}°`;
+                    document.getElementById('pos').innerText = `${telemetry.lat.toFixed(4)}, ${telemetry.lon.toFixed(4)}`;
+
+                    const timeLabel = new Date().toLocaleTimeString('he-IL', { second: '2-digit', minute: '2-digit' });
+                    if (altitudeChart.data.labels.length > 40) {
+                        altitudeChart.data.labels.shift();
+                        altitudeChart.data.datasets[0].data.shift();
+                    }
+                    altitudeChart.data.labels.push(timeLabel);
+                    altitudeChart.data.datasets[0].data.push(Math.round(telemetry.alt));
+                    altitudeChart.update('none');
+                }
+            } catch (err) {
+                document.getElementById('status').innerText = "DATA LINK LOST";
+                document.getElementById('status').style.color = "#ff3333";
+            }
+        }
+
+        setInterval(updateMapPosition, 1000);
+    </script>
+</body>
+</html>
